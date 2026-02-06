@@ -1,4 +1,4 @@
-import argparse, csv
+import argparse, csv, os, glob
 import pyvista as pv
 import numpy as np
 
@@ -158,7 +158,7 @@ def von_mises_2d(stress_2x2):
     sxx, syy = stress_2x2[0, 0], stress_2x2[1, 1]
     sxy = stress_2x2[0, 1]
     return np.sqrt(sxx**2 - sxx*syy + syy**2 + 3*sxy**2)
-def make_table(caseID,nelem,npts,cell_type,all_mask,von_mises,inplane_von_mises,eig_ratios,unidir,areas,thickness,output_csv = "batch_results.csv"):
+def make_table(caseID,time,nelem,npts,cell_type,all_mask,von_mises,inplane_von_mises,eig_ratios,unidir,areas,thickness,output_csv = "batch_results.csv"):
     all_data = []
     for name, mask in all_mask.items():
         # extracted aneurysm data
@@ -291,10 +291,12 @@ def make_table(caseID,nelem,npts,cell_type,all_mask,von_mises,inplane_von_mises,
         # output dictionary
         output = {
         'caseID': caseID,
+        'time': time,
         'mesh_type': cell_type,
         'nelem': nelem,
         'npts': npts,
         'mask': name,
+        'area': np.sum(area_region),
         'mean_aspect': np.mean(aspect),
         'max_aspect': np.max(aspect),
         'min_aspect': np.min(aspect),
@@ -312,252 +314,327 @@ def make_table(caseID,nelem,npts,cell_type,all_mask,von_mises,inplane_von_mises,
         }
         all_data.append(output)
     # save results
-    fieldnames=["caseID", "mesh_type", "nelem", "npts","mask", 
+    fieldnames=["caseID", "time", "mesh_type", "nelem", "npts","mask","area",
                                       "mean_aspect","max_aspect","min_aspect", 
                                       "mean_von", "max_von","min_von",
                                       "mean_inplane_vm","max_inplane_vm","min_inplane_vm",
                                       "mean_eigens_ratio","mean_unidir",
                                       "concen_von","concen_inplane_von","concen_eig_ratios"]
-    with open(output_csv, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(all_data)   
+    file_exists = os.path.isfile(output_csv)
 
-    print(f"- All results saved to {output_csv}")    
+    with open(output_csv, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+        if not file_exists:
+            writer.writeheader()
+
+        for data in all_data:   
+            writer.writerow(data)
+
+    print(f"- All results saved to {output_csv}")  
 
 pa = argparse.ArgumentParser (description="Importing the FEBio-VTK exported files, and mask file to extract mechanical stress features within the masked regions for statistical analysis.")
-pa.add_argument('vtk_input',help='FEBio exported file in vtk format @ specific time step')
+pa.add_argument('vtk_inputs',type=str, nargs="+",metavar="FILE", help='FEBio exported files in vtk format @ specific time steps')
 pa.add_argument('reg_file', help='zfem file with region field')
+pa.add_argument('caseid' ,help='the ID of the case which using in the output result')
 pa.add_argument('--mask','-m',dest='mask_file', type=str, nargs="+", metavar="FILE", help='txt file with with binary value to shows a specific region in domain')
-pa.add_argument('--caseid','-c', dest='caseid', type=str,help='the ID of the case which using in the output result')
+pa.add_argument('--time','-t',dest='run_time',type=float,help='check time of the vtk file')
 
 arg=pa.parse_args()
-vtk_input=arg.vtk_input
-mask_file=arg.mask_file
-reg_file=arg.reg_file
-caseID = arg.caseid if arg.caseid else arg.vtk_input
 
+reg_file=arg.reg_file
+caseID=arg.caseid
+output_csv = 'batch_results.csv'
+readed_time = 0.0
+if len(arg.vtk_inputs) == 1 and arg.run_time:
+    try: 
+        with open (arg.vtk_inputs[0], 'r') as f:
+            lines = f.readlines()
+            find_time = False
+            for line in lines:
+                line = line.strip()
+                if 'time' in line:
+                    find_time = True
+                if find_time:
+                    values = line.split()
+                    if len(values) == 2:
+                        readed_time = float(values[1])
+                        break
+    except FileExistsError as e:
+        print("* ERROR: can not file the vtk input file!")
+    if readed_time != arg.run_time:
+        raise ValueError(f"* ERROR: the time readed {readed_time} from input vtk file does not match with the time you ask {arg.run_time}!")
+
+vtk_inputs = []
+for inp in arg.vtk_inputs:
+    if "x" in inp:
+        pattern = inp.replace("x", "*")
+        matched = sorted(glob.glob(pattern))
+        if not matched:
+            raise ValueError(f"* No files match pattern: {inp}")
+        vtk_inputs.extend(matched)
+    else:
+        if not os.path.isfile(inp):
+            raise ValueError(f"* File not found: {inp}")
+        vtk_inputs.append(inp)
+vtk_inputs = sorted(set(vtk_inputs))
+print(f"- Using {len(vtk_inputs)} VTK files: ",vtk_inputs)
+mask_file = []
+for inp in arg.mask_file:
+    if "x" in inp:
+        pattern = inp.replace("x", "*")
+        matched = sorted(glob.glob(pattern))
+        if not matched:
+            raise ValueError(f"* No files match pattern: {inp}")
+        mask_file.extend(matched)
+    else:
+        if not os.path.isfile(inp):
+            raise ValueError(f"* File not found: {inp}")
+        mask_file.append(inp)
+
+mask_file = sorted(set(mask_file))
+print(f"- Using {len(mask_file)} mask files: ",mask_file)
 # check the format of inported files:
-if not vtk_input.endswith('.vtk'):
-    raise ValueError(f"* Error: the format of {vtk_input} is not vtk!")
+for vtk_input in vtk_inputs:
+    if not vtk_input.endswith('.vtk'):
+        raise ValueError(f"* Error: the format of {vtk_input} is not vtk!")
 if not reg_file.endswith('.zfem'):
     raise ValueError(f"* Error: the format of {reg_file} is not zfem!")
-
+# check csv output file available in the root:
+if os.path.isfile(output_csv):
+    raise ValueError (f"* Error: {output_csv} file already exist in the root path!")
 # read and check vtk file 
 required_pointal_data={'shell_displacement', 'shell_director','shell_thickness'}
 required_cell_data={'shell_strain', 'shell_top_strain', 'shell_bottom_strain', 'shell_top_stress', 'shell_bottom_stress', 'stress', 'PK2_stress'}
-mesh = pv.read(vtk_input)
-print(f"- Successfully loaded {vtk_input}")
-print(f"- Number of points: {mesh.n_points}")
-print(f"- Number of cells : {mesh.n_cells}")
-cells_types = []
-for ID in np.unique(mesh.celltypes):
-    cell_type_name = None
-    for name, (_, cell_ID) in VTK_CELL_TYPES.items():
-        if cell_ID == ID:
-            cell_type_name = name
-            break
-
-    if cell_type_name is None:
-        raise ValueError(f"* Error: Unknown cell type ID {ID}")
-
-    cells_types.append(cell_type_name)
-heterogeneity = "Homogeneous" if len(cells_types) == 1 else "Heterogeneous"
-print(f"- Cells type: {heterogeneity} - {cells_types}")
-if len(cells_types) != 1:
-    raise ValueError(f"* Error: The type of cells are not uniformed, list of cell types: {cells_types} ")
-# check required field 
-for field in required_pointal_data:
-    if field not in list(mesh.point_data.keys()):
-        raise ValueError(f"* Error: field {field} does not avaiable in {vtk_input}")
-for field in required_cell_data:
-    if field not in list(mesh.cell_data.keys()):
-        raise ValueError(f"* Error: field {field} does not avaiable in {vtk_input}")
-print("- All required fields are avaiable")
-# read region file
-region_pts, region_cells,thickness_cells, elems = [], [], [], []
-npts, nelem = 0, 0
-try: 
-    with open(reg_file, "r", encoding="utf-8-sig") as file:
-        lines = [line.strip() for line in file]
-        find_elems = False
-        for i, line in enumerate(lines):
-            if line.upper().startswith("TRIANGLE"):
-                nelem = int(lines[i+2].split()[0])
-                find_elems = True
-                if nelem != mesh.n_cells:
-                    raise ValueError (f"* Error: number of element in vtk({mesh.n_cells})file and region file ({nelem}) does not match!")
-                    exit()
-            if line.upper().startswith("POINTS"):
-                npts = int(lines[i+1].split()[0])
-            if find_elems:
-                values = lines[i+3].split()
-                if len(values) == 3:
-                    elems.append([int(value) for value in values])
-                else:
-                    raise ValueError (f"* Error: the cell type of {reg_file} does not tri3!")
-                if len(elems) == nelem:
-                    find_elems = False
+for vtk_input in vtk_inputs:
+    time = 0.0
+    with open (vtk_input, 'r') as f:
+        lines = f.readlines()
+        find_time = False
+        for line in lines:
+            line = line.strip()
+            if 'time' in line:
+                find_time = True
+            if find_time:
+                values = line.split()
+                if len(values) == 2:
+                    time = float(values[1])
                     break
-        if len(elems) != nelem:
-            raise ValueError (f"* Can not read the ELEMENTS in {reg_file} properly!")
-except Exception as e:
-    print("Error: ",e)
-print(f"- number of points {npts} and element {nelem} in {reg_file}!")
-try:
-    with open(reg_file, "r") as file:
-        lines = [line.strip() for line in file]
-        find_region = False
-        for i, line in enumerate(lines):
-            if line.startswith("regions"):
-                find_region = True
-                continue
-            if find_region:
-                values = lines[i+1].split()
-                if len (values) != 1:
-                    raise ValueError (f"* Error: number of componand in line {i+1} of region field is more than 1 !")
-                region_pts.append(int (values[0]))
-            if len(region_pts) == npts:
-                find_region = False
+
+    print ("-"*10+f"start reading {vtk_input}"+"-"*10)
+    mesh = pv.read(vtk_input)
+    print(f"- Successfully loaded {vtk_input}")
+    print(f"- Number of points: {mesh.n_points}")
+    print(f"- Number of cells : {mesh.n_cells}")
+    cells_types = []
+    for ID in np.unique(mesh.celltypes):
+        cell_type_name = None
+        for name, (_, cell_ID) in VTK_CELL_TYPES.items():
+            if cell_ID == ID:
+                cell_type_name = name
                 break
-except FileExistsError:
-    print(f"* Error: does not find {reg_file}!")
-if len (region_pts) != npts:
-    raise ValueError ("* Error: code can not read region field properly!")
-else:
-    print(f"- Successfully Readed {reg_file} file!")
-# Convert the PointalData region to celldata region:
-for elem in elems:
-    region_cells.append(region_pts[elem[0]-1])
-# convert pyVista DataStructure to list
-vtk_pnts, vtk_cells = [], []
-vtk_pnts=mesh.points.tolist()
-for i in range(mesh.n_cells):
-    vtk_cells.append(list(mesh.get_cell(i).point_ids))
-# Convert the PointalData region to celldata thickness:
-for elem in elems:
-    t = 0
-    for ele in elem:
-        t += mesh.point_data['shell_thickness'][ele-1]
-    t /= len (elem)
-    thickness_cells.append(t)
-# calculate inplane stress
-stress_inplane_all = []
-t1_all, t2_all, n_all = [], [], []
-print("- Start Calculating the local corrdinate system ...")
-for e, elem in enumerate(vtk_cells):
-    # handle mid-node elements
-    if len(elem) >= 6:
-        elem_nodes = [elem[0], elem[2], elem[4]]
-    else:
-        elem_nodes = elem[:3]
 
-    R, t1, t2, n = local_basis_from_element(vtk_pnts, elem_nodes)
-    t1_all.append(t1)
-    t2_all.append(t2)
-    n_all.append(n)
+        if cell_type_name is None:
+            raise ValueError(f"* Error: Unknown cell type ID {ID}")
 
-    # transform global stress tensor to local
-    sigma_global = np.array(mesh.cell_data['stress'][e]).reshape(3, 3)
-    sigma_local = R.T @ sigma_global @ R
-    sigma_inplane = sigma_local[:2, :2]
-
-    stress_inplane_all.append(sigma_inplane)
-# calculate the area of each cells 
-areas = []
-for i, conn in enumerate(vtk_cells):
-    areas.append(element_area(vtk_pnts, conn, cells_types[0]))
-areas = np.array(areas, dtype=float)
-# Compute in-plane von Mises
-inplane_von_mises_mid = [von_mises_2d(t) for t in stress_inplane_all]
-
-# Compute von Mises stress for each tensor
-von_mises_mid = []
-for tensor in mesh.cell_data['stress']:
-    stress3x3 = np.array(tensor).reshape(3, 3)
-    vm = von_mises_3d(stress3x3)
-    von_mises_mid.append(float(vm))
-
-# Compute eigen values and r 
-stress_inplane_all = [np.array(t) for t in stress_inplane_all]
-
-max_eigs = []
-min_eigs = []
-eig_ratios = []
-
-for t in stress_inplane_all:
-    eigvals = np.linalg.eigvals(t)
-    eigvals = eigvals.real  
-    eigvals = np.abs(eigvals)
-    eig_max = np.max(eigvals)
-    eig_min = np.min(eigvals)
-    max_eigs.append(eig_max)
-    min_eigs.append(eig_min)
-
-    if np.abs(eig_min) > 1e-12 and np.abs(eig_max) > 1e3:  
-        eig_ratios.append(np.abs(eig_min) / np.abs(eig_max))
-    else:
-        eig_ratios.append(0.00)
-
-max_eigs = np.array(max_eigs)
-min_eigs = np.array(min_eigs)
-eig_ratios = np.array(eig_ratios)
-
-# Uni-directional Stress area
-unidir_1 = (eig_ratios < 0.1).astype(int)
-unidir_5 = (eig_ratios < 0.5).astype(int)
-
-# creat table of for paramteres 
-mask={}
-if mask_file:
-    for file in mask_file:
-        data = []
-        try:
-            with open (file,'r') as f:
-                lines = f.readlines()
-                for line in lines:
-                    values = line.strip().split()
-                    if len(values) == 1:    
-                        data.append(int(line))
+        cells_types.append(cell_type_name)
+    heterogeneity = "Homogeneous" if len(cells_types) == 1 else "Heterogeneous"
+    print(f"- Cells type: {heterogeneity} - {cells_types}")
+    if len(cells_types) != 1:
+        raise ValueError(f"* Error: The type of cells are not uniformed, list of cell types: {cells_types} ")
+    # check required field 
+    for field in required_pointal_data:
+        if field not in list(mesh.point_data.keys()):
+            raise ValueError(f"* Error: field {field} does not avaiable in {vtk_input}")
+    for field in required_cell_data:
+        if field not in list(mesh.cell_data.keys()):
+            raise ValueError(f"* Error: field {field} does not avaiable in {vtk_input}")
+    print("- All required fields are avaiable")
+    # read region file
+    region_pts, region_cells,thickness_cells, elems = [], [], [], []
+    npts, nelem = 0, 0
+    try: 
+        with open(reg_file, "r", encoding="utf-8-sig") as file:
+            lines = [line.strip() for line in file]
+            find_elems = False
+            for i, line in enumerate(lines):
+                if line.upper().startswith("TRIANGLE"):
+                    nelem = int(lines[i+2].split()[0])
+                    find_elems = True
+                    if nelem != mesh.n_cells:
+                        raise ValueError (f"* Error: number of element in vtk({mesh.n_cells})file and region file ({nelem}) does not match!")
+                        exit()
+                if line.upper().startswith("POINTS"):
+                    npts = int(lines[i+1].split()[0])
+                if find_elems:
+                    values = lines[i+3].split()
+                    if len(values) == 3:
+                        elems.append([int(value) for value in values])
                     else:
-                        raise ValueError (f"* Error: number of componand in line {line} of file {file} is not ONE!")
-        except FileExistsError:
-            print(f"* Error: does not find {file}!")
-        if len(np.unique(data)) != 2:
-            raise ValueError (f"* Error: the mask file {file} is not binary field!")
-        if len (data) != mesh.n_cells:
-            raise ValueError (f"* Error: number of cell in mask file {file} ({len(data)}) no match with nelem of vtk file ({mesh.n_cells})!")
-        mask[file]=data
-else:
-    data = []
-    for ele in range (mesh.n_cells):
-        if region_cells[ele] in [4,8,16]:    
-            data.append(int(1))
+                        raise ValueError (f"* Error: the cell type of {reg_file} does not tri3!")
+                    if len(elems) == nelem:
+                        find_elems = False
+                        break
+            if len(elems) != nelem:
+                raise ValueError (f"* Can not read the ELEMENTS in {reg_file} properly!")
+    except Exception as e:
+        print("Error: ",e)
+    print(f"- number of points {npts} and element {nelem} in {reg_file}!")
+    try:
+        with open(reg_file, "r") as file:
+            lines = [line.strip() for line in file]
+            find_region = False
+            for i, line in enumerate(lines):
+                if line.startswith("regions"):
+                    find_region = True
+                    continue
+                if find_region:
+                    values = lines[i+1].split()
+                    if len (values) != 1:
+                        raise ValueError (f"* Error: number of componand in line {i+1} of region field is more than 1 !")
+                    region_pts.append(int (values[0]))
+                if len(region_pts) == npts:
+                    find_region = False
+                    break
+    except FileExistsError:
+        print(f"* Error: does not find {reg_file}!")
+    if len (region_pts) != npts:
+        raise ValueError ("* Error: code can not read region field properly!")
+    else:
+        print(f"- Successfully Readed {reg_file} file!")
+    # Convert the PointalData region to celldata region:
+    for elem in elems:
+        region_cells.append(region_pts[elem[0]-1])
+    # convert pyVista DataStructure to list
+    vtk_pnts, vtk_cells = [], []
+    vtk_pnts=mesh.points.tolist()
+    for i in range(mesh.n_cells):
+        vtk_cells.append(list(mesh.get_cell(i).point_ids))
+    # Convert the PointalData region to celldata thickness:
+    for elem in elems:
+        t = 0
+        for ele in elem:
+            t += mesh.point_data['shell_thickness'][ele-1]
+        t /= len (elem)
+        thickness_cells.append(t)
+    # calculate inplane stress
+    stress_inplane_all = []
+    t1_all, t2_all, n_all = [], [], []
+    print("- Start Calculating the local coordinate system ...")
+    for e, elem in enumerate(vtk_cells):
+        # handle mid-node elements
+        if len(elem) >= 6:
+            elem_nodes = [elem[0], elem[2], elem[4]]
         else:
-            data.append(int(0))
-    mask['aneu']=data
-# check input and calculated fields
-cell_data, point_data = {}, {}
-for field in required_pointal_data:
-    if field in list(mesh.point_data.keys()):
-        point_data[field]=mesh.point_data[field]
-cell_data['region_cells'] = region_cells
-cell_data['area'] = areas
-cell_data['t1'] = t1_all
-cell_data['t2'] = t2_all
-cell_data['n'] = n_all
-cell_data['stress_inplane'] = stress_inplane_all
-cell_data['inplane_von_mises_mid'] = inplane_von_mises_mid
-cell_data['von_mises_mid'] = von_mises_mid
-cell_data['max_eigs'] = max_eigs
-cell_data['min_eigs'] = min_eigs
-cell_data['eig_ratios'] = eig_ratios
-cell_data['unidir_1'] = unidir_1
-cell_data['thickness_cells'] = thickness_cells
-for field, data in mask.items():
-    cell_data[field] = data
-for field in required_cell_data:
-    if field in list(mesh.cell_data.keys()):
-        cell_data[field]=mesh.cell_data[field]
-write_vtk(vtk_pnts,vtk_cells,cells_types[0],cell_data=cell_data, point_data=point_data, out_vtk="all_fields.vtk")
-make_table(caseID,mesh.n_cells,mesh.n_points,cells_types[0],mask,von_mises_mid,inplane_von_mises_mid,eig_ratios,unidir_1,areas,thickness_cells)
+            elem_nodes = elem[:3]
+
+        R, t1, t2, n = local_basis_from_element(vtk_pnts, elem_nodes)
+        t1_all.append(t1)
+        t2_all.append(t2)
+        n_all.append(n)
+
+        # transform global stress tensor to local
+        sigma_global = np.array(mesh.cell_data['stress'][e]).reshape(3, 3)
+        sigma_local = R.T @ sigma_global @ R
+        sigma_inplane = sigma_local[:2, :2]
+
+        stress_inplane_all.append(sigma_inplane)
+    # calculate the area of each cells 
+    areas = []
+    for i, conn in enumerate(vtk_cells):
+        areas.append(element_area(vtk_pnts, conn, cells_types[0]))
+    areas = np.array(areas, dtype=float)
+    # Compute in-plane von Mises
+    inplane_von_mises_mid = [von_mises_2d(t) for t in stress_inplane_all]
+
+    # Compute von Mises stress for each tensor
+    von_mises_mid = []
+    for tensor in mesh.cell_data['stress']:
+        stress3x3 = np.array(tensor).reshape(3, 3)
+        vm = von_mises_3d(stress3x3)
+        von_mises_mid.append(float(vm))
+
+    # Compute eigen values and r 
+    stress_inplane_all = [np.array(t) for t in stress_inplane_all]
+
+    max_eigs = []
+    min_eigs = []
+    eig_ratios = []
+
+    for t in stress_inplane_all:
+        eigvals = np.linalg.eigvals(t)
+        eigvals = eigvals.real  
+        eigvals = np.abs(eigvals)
+        eig_max = np.max(eigvals)
+        eig_min = np.min(eigvals)
+        max_eigs.append(eig_max)
+        min_eigs.append(eig_min)
+
+        if np.abs(eig_min) > 1e-12 and np.abs(eig_max) > 1e3:  
+            eig_ratios.append(np.abs(eig_min) / np.abs(eig_max))
+        else:
+            eig_ratios.append(0.00)
+
+    max_eigs = np.array(max_eigs)
+    min_eigs = np.array(min_eigs)
+    eig_ratios = np.array(eig_ratios)
+
+    # Uni-directional Stress area
+    unidir_1 = (eig_ratios < 0.1).astype(int)
+    unidir_5 = (eig_ratios < 0.5).astype(int)
+
+    # creat table of for paramteres 
+    mask={}
+    if mask_file:
+        for file in mask_file:
+            data = []
+            try:
+                with open (file,'r') as f:
+                    lines = f.readlines()
+                    for line in lines:
+                        values = line.strip().split()
+                        if len(values) == 1:    
+                            data.append(int(line))
+                        else:
+                            raise ValueError (f"* Error: number of componand in line {line} of file {file} is not ONE!")
+            except FileExistsError:
+                print(f"* Error: does not find {file}!")
+            if len(np.unique(data)) != 2:
+                raise ValueError (f"* Error: the mask file {file} is not binary field!")
+            if len (data) != mesh.n_cells:
+                raise ValueError (f"* Error: number of cell in mask file {file} ({len(data)}) no match with nelem of vtk file ({mesh.n_cells})!")
+            mask[file]=data
+    else:
+        data = []
+        for ele in range (mesh.n_cells):
+            if region_cells[ele] in [4,8,16]:    
+                data.append(int(1))
+            else:
+                data.append(int(0))
+        mask['aneu']=data
+    # check input and calculated fields
+    cell_data, point_data = {}, {}
+    for field in required_pointal_data:
+        if field in list(mesh.point_data.keys()):
+            point_data[field]=mesh.point_data[field]
+    cell_data['region_cells'] = region_cells
+    cell_data['area'] = areas
+    cell_data['t1'] = t1_all
+    cell_data['t2'] = t2_all
+    cell_data['n'] = n_all
+    cell_data['stress_inplane'] = stress_inplane_all
+    cell_data['inplane_von_mises_mid'] = inplane_von_mises_mid
+    cell_data['von_mises_mid'] = von_mises_mid
+    cell_data['max_eigs'] = max_eigs
+    cell_data['min_eigs'] = min_eigs
+    cell_data['eig_ratios'] = eig_ratios
+    cell_data['unidir_1'] = unidir_1
+    cell_data['thickness_cells'] = thickness_cells
+    for field, data in mask.items():
+        cell_data[field] = data
+    for field in required_cell_data:
+        if field in list(mesh.cell_data.keys()):
+            cell_data[field]=mesh.cell_data[field]
+    write_vtk(vtk_pnts,vtk_cells,cells_types[0],cell_data=cell_data, point_data=point_data, out_vtk=f"{caseID}_fields.vtk")
+    make_table(caseID,time,mesh.n_cells,mesh.n_points,cells_types[0],mask,von_mises_mid,inplane_von_mises_mid,eig_ratios,unidir_1,areas,thickness_cells,output_csv)
+print ("-"*10+f"All cases readed an features calculated and save in csv file"+"-"*10)
