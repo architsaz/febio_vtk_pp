@@ -93,22 +93,55 @@ def von_mises_3d(sigma):
     vm = np.sqrt(part1 + part2)
 
     return vm[0] if single else vm
+# def area_tri3(pts, conn):
+#     a, b, c = np.asarray(pts[conn[0]-1]), np.asarray(pts[conn[1]-1]), np.asarray(pts[conn[2]-1])
+#     return 0.5 * np.linalg.norm(np.cross(b - a, c - a))
+# def area_tri6(pts, conn):
+#     # first three are corner nodes
+#     a, b, c = np.asarray(pts[conn[0]-1]), np.asarray(pts[conn[1]-1]), np.asarray(pts[conn[2]-1])
+#     return 0.5 * np.linalg.norm(np.cross(b - a, c - a))
+# def area_quad4(pts, conn):
+#     p0, p1, p2, p3 = np.asarray(pts[conn[0]-1]), np.asarray(pts[conn[1]-1]), np.asarray(pts[conn[2]-1]), np.asarray(pts[conn[3]-1])
+#     area1 = 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0))
+#     area2 = 0.5 * np.linalg.norm(np.cross(p2 - p0, p3 - p0))
+#     return area1 + area2
+# def area_quad8(pts, conn):
+#     p0, p1, p2, p3 = np.asarray(pts[conn[0]-1]), np.asarray(pts[conn[1]-1]), np.asarray(pts[conn[2]-1]), np.asarray(pts[conn[3]-1])
+#     area1 = 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0))
+#     area2 = 0.5 * np.linalg.norm(np.cross(p2 - p0, p3 - p0))
+#     return area1 + area2
 def area_tri3(pts, conn):
-    a, b, c = np.asarray(pts[conn[0]-1]), np.asarray(pts[conn[1]-1]), np.asarray(pts[conn[2]-1])
+    a = np.asarray(pts[conn[0]])
+    b = np.asarray(pts[conn[1]])
+    c = np.asarray(pts[conn[2]])
     return 0.5 * np.linalg.norm(np.cross(b - a, c - a))
+
 def area_tri6(pts, conn):
-    # first three are corner nodes
-    a, b, c = np.asarray(pts[conn[0]-1]), np.asarray(pts[conn[1]-1]), np.asarray(pts[conn[2]-1])
+    a = np.asarray(pts[conn[0]])
+    b = np.asarray(pts[conn[1]])
+    c = np.asarray(pts[conn[2]])
     return 0.5 * np.linalg.norm(np.cross(b - a, c - a))
+
 def area_quad4(pts, conn):
-    p0, p1, p2, p3 = np.asarray(pts[conn[0]-1]), np.asarray(pts[conn[1]-1]), np.asarray(pts[conn[2]-1]), np.asarray(pts[conn[3]-1])
+    p0 = np.asarray(pts[conn[0]])
+    p1 = np.asarray(pts[conn[1]])
+    p2 = np.asarray(pts[conn[2]])
+    p3 = np.asarray(pts[conn[3]])
+
     area1 = 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0))
     area2 = 0.5 * np.linalg.norm(np.cross(p2 - p0, p3 - p0))
+
     return area1 + area2
+
 def area_quad8(pts, conn):
-    p0, p1, p2, p3 = np.asarray(pts[conn[0]-1]), np.asarray(pts[conn[1]-1]), np.asarray(pts[conn[2]-1]), np.asarray(pts[conn[3]-1])
+    p0 = np.asarray(pts[conn[0]])
+    p1 = np.asarray(pts[conn[1]])
+    p2 = np.asarray(pts[conn[2]])
+    p3 = np.asarray(pts[conn[3]])
+
     area1 = 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0))
     area2 = 0.5 * np.linalg.norm(np.cross(p2 - p0, p3 - p0))
+
     return area1 + area2
 def element_area(pts, conn, cell_type):
     if cell_type in ("tri3", 5):     
@@ -339,46 +372,67 @@ pa.add_argument('reg_file', help='zfem file with region field')
 pa.add_argument('caseid' ,help='the ID of the case which using in the output result')
 pa.add_argument('--mask','-m',dest='mask_file', type=str, nargs="+", metavar="FILE", help='txt file with with binary value to shows a specific region in domain')
 pa.add_argument('--time','-t',dest='run_time',type=float,help='check time of the vtk file')
+pa.add_argument('--name','-n',dest='name',type=str,help='name of the output')
+pa.add_argument('--area', '-an', action='store_true', help='covering area for all element 1')
 
 arg=pa.parse_args()
 
 reg_file=arg.reg_file
 caseID=arg.caseid
-output_csv = 'batch_results.csv'
-readed_time = 0.0
-if len(arg.vtk_inputs) == 1 and arg.run_time:
-    try: 
-        with open (arg.vtk_inputs[0], 'r') as f:
-            lines = f.readlines()
-            find_time = False
-            for line in lines:
-                line = line.strip()
-                if 'time' in line:
-                    find_time = True
-                if find_time:
-                    values = line.split()
-                    if len(values) == 2:
-                        readed_time = float(values[1])
-                        break
-    except FileExistsError as e:
-        print("* ERROR: can not file the vtk input file!")
-    if readed_time != arg.run_time:
-        raise ValueError(f"* ERROR: the time readed {readed_time} from input vtk file does not match with the time you ask {arg.run_time}!")
+if arg.name:
+    output_csv = arg.name
+else:
+    output_csv = 'batch_results.csv'
 
-vtk_inputs = []
+vtk_inputs_no_checked = []
 for inp in arg.vtk_inputs:
     if "x" in inp:
         pattern = inp.replace("x", "*")
         matched = sorted(glob.glob(pattern))
         if not matched:
             raise ValueError(f"* No files match pattern: {inp}")
-        vtk_inputs.extend(matched)
+        vtk_inputs_no_checked.extend(matched)
     else:
         if not os.path.isfile(inp):
             raise ValueError(f"* File not found: {inp}")
-        vtk_inputs.append(inp)
-vtk_inputs = sorted(set(vtk_inputs))
-print(f"- Using {len(vtk_inputs)} VTK files: ",vtk_inputs)
+        vtk_inputs_no_checked.append(inp)
+vtk_inputs_no_checked = sorted(set(vtk_inputs_no_checked))
+print(f"- the {len(vtk_inputs_no_checked)} VTK files used!")
+vtk_inputs = []
+max_time_vtk_input = None
+time_max = 0.0
+for inp in vtk_inputs_no_checked:
+    readed_time = 0.0
+    if arg.run_time:
+        try: 
+            with open (inp, 'r') as f:
+                lines = f.readlines()
+                find_time = False
+                for line in lines:
+                    line = line.strip()
+                    if 'time' in line:
+                        find_time = True
+                    if find_time:
+                        values = line.split()
+                        if len(values) == 2:
+                            readed_time = float(values[1])
+                            break
+        except FileExistsError as e:
+            print("* ERROR: can not file the vtk input file!")
+    if readed_time < arg.run_time or readed_time > 1.0:
+        print(f"* ERROR: the time readed {readed_time} from input vtk file does not match or bigger than the time user ask {arg.run_time}!")
+        continue
+    else:
+        if time_max < readed_time:
+            max_time_vtk_input=inp
+            time_max = readed_time
+        print(f"*** the time readed {readed_time} from input vtk file and the time user ask {arg.run_time}")
+
+if max_time_vtk_input is not None:
+    vtk_inputs.append(max_time_vtk_input)
+else:
+    print("* ERROR: no valid vtk file found!")
+print(f"- The {len(vtk_inputs)} VTK files pass condition:", vtk_inputs)
 mask_file = []
 for inp in arg.mask_file:
     if "x" in inp:
@@ -401,8 +455,8 @@ for vtk_input in vtk_inputs:
 if not reg_file.endswith('.zfem'):
     raise ValueError(f"* Error: the format of {reg_file} is not zfem!")
 # check csv output file available in the root:
-if os.path.isfile(output_csv):
-    raise ValueError (f"* Error: {output_csv} file already exist in the root path!")
+# if os.path.isfile(output_csv):
+#     raise ValueError (f"* Error: {output_csv} file already exist in the root path!")
 # read and check vtk file 
 required_pointal_data={'shell_displacement', 'shell_director','shell_thickness'}
 required_cell_data={'shell_strain', 'shell_top_strain', 'shell_bottom_strain', 'shell_top_stress', 'shell_bottom_stress', 'stress', 'PK2_stress'}
@@ -453,58 +507,126 @@ for vtk_input in vtk_inputs:
     # read region file
     region_pts, region_cells,thickness_cells, elems = [], [], [], []
     npts, nelem = 0, 0
-    try: 
-        with open(reg_file, "r", encoding="utf-8-sig") as file:
-            lines = [line.strip() for line in file]
-            find_elems = False
-            for i, line in enumerate(lines):
-                if line.upper().startswith("TRIANGLE"):
-                    nelem = int(lines[i+2].split()[0])
-                    find_elems = True
-                    if nelem != mesh.n_cells:
-                        raise ValueError (f"* Error: number of element in vtk({mesh.n_cells})file and region file ({nelem}) does not match!")
-                        exit()
-                if line.upper().startswith("POINTS"):
-                    npts = int(lines[i+1].split()[0])
-                if find_elems:
-                    values = lines[i+3].split()
-                    if len(values) == 3:
-                        elems.append([int(value) for value in values])
-                    else:
-                        raise ValueError (f"* Error: the cell type of {reg_file} does not tri3!")
-                    if len(elems) == nelem:
-                        find_elems = False
+    if os.path.exists(reg_file):
+
+        try:
+            with open(reg_file, "r") as file:
+                lines = [line.strip() for line in file]
+                find_elems = False
+                for i, line in enumerate(lines):
+                    if line.upper().startswith("TRIANGLE"):
+                        nelem = int(lines[i + 2].split()[0])
+                        find_elems = True
+                        if nelem != mesh.n_cells:
+                            raise ValueError(
+                                f"* Error: number of element in vtk ({mesh.n_cells}) "
+                                f"and region file ({nelem}) does not match!")
+                    if line.upper().startswith("POINTS"):
+                        npts = int(lines[i + 1].split()[0])
+                    if find_elems:
+                        values = lines[i + 3].split()
+                        if len(values) == 3:
+                            elems.append([int(value) for value in values])
+                        else:
+                            raise ValueError(f"* Error: the cell type of {reg_file} is not tri3!")
+                        if len(elems) == nelem:
+                            find_elems = False
+                            break
+                if len(elems) != nelem:
+                    raise ValueError(f"* Cannot read the ELEMENTS in {reg_file} properly!")
+
+        except Exception as e:
+            print("Error:", e)
+        print(f"- number of points {npts} and element {nelem} in {reg_file}!")
+        try:
+            with open(reg_file, "r") as file:
+
+                lines = [line.strip() for line in file]
+
+                find_region = False
+
+                for i, line in enumerate(lines):
+
+                    if line.startswith("regions"):
+                        find_region = True
+                        continue
+
+                    if find_region:
+                        values = lines[i + 1].split()
+
+                        if len(values) != 1:
+                            raise ValueError(
+                                f"* Error: number of components in line {i+1} "
+                                f"of region field is more than 1!"
+                            )
+
+                        region_pts.append(int(values[0]))
+
+                    if len(region_pts) == npts:
+                        find_region = False
                         break
-            if len(elems) != nelem:
-                raise ValueError (f"* Can not read the ELEMENTS in {reg_file} properly!")
-    except Exception as e:
-        print("Error: ",e)
-    print(f"- number of points {npts} and element {nelem} in {reg_file}!")
-    try:
-        with open(reg_file, "r") as file:
-            lines = [line.strip() for line in file]
-            find_region = False
-            for i, line in enumerate(lines):
-                if line.startswith("regions"):
-                    find_region = True
-                    continue
-                if find_region:
-                    values = lines[i+1].split()
-                    if len (values) != 1:
-                        raise ValueError (f"* Error: number of componand in line {i+1} of region field is more than 1 !")
-                    region_pts.append(int (values[0]))
-                if len(region_pts) == npts:
-                    find_region = False
-                    break
-    except FileExistsError:
-        print(f"* Error: does not find {reg_file}!")
-    if len (region_pts) != npts:
-        raise ValueError ("* Error: code can not read region field properly!")
+
+        except Exception as e:
+            print("Error:", e)
+
+        if len(region_pts) != npts:
+            raise ValueError("* Error: code cannot read region field properly!")
+        else:
+            print(f"- Successfully read {reg_file} file!")
+        # Convert the PointalData region to celldata region:
+        for elem in elems:
+            region_cells.append(region_pts[elem[0]-1])
+
     else:
-        print(f"- Successfully Readed {reg_file} file!")
-    # Convert the PointalData region to celldata region:
-    for elem in elems:
-        region_cells.append(region_pts[elem[0]-1])
+        print(f"* {reg_file} does not exist!")
+        try:
+            with open(f"../data/{caseID}.flds.zfem", "r") as file:
+                lines = [line.strip() for line in file]
+                find_elems = False
+                for i, line in enumerate(lines):
+                    if line.upper().startswith("TRIANGLE"):
+                        nelem = int(lines[i + 2].split()[0])
+                        find_elems = True
+                        if nelem != mesh.n_cells:
+                            raise ValueError(
+                                f"* Error: number of element in vtk ({mesh.n_cells}) "
+                                f"and region file ({nelem}) does not match!")
+                    if line.upper().startswith("POINTS"):
+                        npts = int(lines[i + 1].split()[0])
+                    if find_elems:
+                        values = lines[i + 3].split()
+                        if len(values) == 3:
+                            elems.append([int(value) for value in values])
+                        else:
+                            raise ValueError(f"* Error: the cell type of ../data/{caseID}.flds.zfem is not tri3!")
+                        if len(elems) == nelem:
+                            find_elems = False
+                            break
+                if len(elems) != nelem:
+                    raise ValueError(f"* Cannot read the ELEMENTS in ../data/{caseID}.flds.zfem properly!")
+
+        except Exception as e:
+            print("Error:", e)
+        print(f"- number of points {npts} and element {nelem} in ../data/{caseID}.flds.zfem!")
+        try:
+            with open(f"../data/{caseID}.aneu.0.0", "r") as file:
+                lines = [line.strip() for line in file]
+
+            for i, line in enumerate(lines):
+
+                values = line.split()
+
+                if len(values) != 1:
+                    raise ValueError(
+                        f"* Error: number of components in line {i} "
+                        f"of aneu.0.0 mask is more than 1!"
+                    )
+
+                region_cells.append(int(values[0]))
+
+        except Exception as e:
+            print("Error:", e)
+
     # convert pyVista DataStructure to list
     vtk_pnts, vtk_cells = [], []
     vtk_pnts=mesh.points.tolist()
@@ -541,8 +663,12 @@ for vtk_input in vtk_inputs:
         stress_inplane_all.append(sigma_inplane)
     # calculate the area of each cells 
     areas = []
-    for i, conn in enumerate(vtk_cells):
-        areas.append(element_area(vtk_pnts, conn, cells_types[0]))
+    if arg.area:
+        for i in range(len(vtk_cells)):
+            areas.append('1')
+    else:
+        for i, conn in enumerate(vtk_cells):
+            areas.append(element_area(vtk_pnts, conn, cells_types[0]))
     areas = np.array(areas, dtype=float)
     # Compute in-plane von Mises
     inplane_von_mises_mid = [von_mises_2d(t) for t in stress_inplane_all]
